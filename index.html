@@ -40,6 +40,11 @@
   .site-sub { font-size: 11px; color: var(--text-secondary); margin-top: 2px; font-weight: 300; }
   .today-date { text-align: right; font-size: 11px; color: var(--text-secondary); }
   .today-date strong { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
+ 
+  .skip-btn { margin-top: 6px; display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 500; font-family: 'DM Sans', sans-serif; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-light); border-radius: 100px; padding: 3px 10px; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+  .skip-btn:active { background: var(--surface-3); color: var(--red); border-color: var(--red); }
+  .skip-btn.skipped { color: var(--red); border-color: var(--red); background: rgba(232,112,112,0.08); }
+ 
   .status-row { display: flex; gap: 7px; flex-wrap: wrap; }
   .pill { font-size: 11px; font-weight: 500; padding: 4px 11px; border-radius: 100px; display: inline-flex; align-items: center; gap: 5px; }
   .pill-dot { width: 6px; height: 6px; border-radius: 50%; }
@@ -163,7 +168,7 @@
   .cal-month-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
   .cal-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 3px; margin-bottom: 16px; }
   .cal-dow { font-size: 10px; font-weight: 600; color: var(--text-muted); text-align: center; padding: 4px 0; }
-  .cal-cell { border-radius: 8px; padding: 6px 3px; min-height: 52px; text-align: center; border: 1px solid transparent; }
+  .cal-cell { border-radius: 8px; padding: 6px 3px; min-height: 62px; text-align: center; border: 1px solid transparent; }
   .cal-cell.empty { background: none; }
   .cal-cell.today-cell { border-color: var(--text); }
   .cal-day-num { font-size: 12px; font-weight: 500; margin-bottom: 4px; color: var(--text-secondary); }
@@ -172,6 +177,12 @@
  
   .empty-state { text-align: center; padding: 44px 24px; color: var(--text-secondary); font-size: 14px; line-height: 1.7; }
   .next-card { display: flex; align-items: center; gap: 12px; padding: 4px 0 0; }
+ 
+  .finish-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 14px; padding: 16px; border-radius: var(--radius-sm); border: 1px solid #1F4A30; background: #1A3D2A; color: #5EBA8A; font-size: 15px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all 0.15s; min-height: 52px; }
+  .finish-btn:active { background: #224d35; border-color: #2a5e3c; }
+  .finish-banner { background: var(--green-bg); border: 1px solid var(--green); border-radius: var(--radius-sm); padding: 14px 16px; text-align: center; margin-top: 14px; }
+  .finish-banner-title { font-size: 15px; font-weight: 600; color: var(--green); margin-bottom: 4px; }
+  .finish-banner-sub { font-size: 12px; color: var(--text-secondary); }
 </style>
 </head>
 <body>
@@ -185,6 +196,7 @@
     <div class="today-date">
       <strong id="header-date"></strong>
       <span id="header-day"></span>
+      <button class="skip-btn" id="skip-btn" onclick="skipWorkout()" style="display:none">Skip Workout</button>
     </div>
   </div>
   <div class="status-row" id="status-row"></div>
@@ -294,20 +306,95 @@ function saveWeights(a){localStorage.setItem('nasser_weights',JSON.stringify(a))
 const TODAY=new Date();TODAY.setHours(0,0,0,0);
 let CURRENT_DAY_KEY='';
  
+// ── SKIP LOGIC ────────────────────────────────────────────────────────────────
+function loadSkips(){return JSON.parse(localStorage.getItem('nasser_skips')||'[]');} // array of skipped dateKeys
+function saveSkips(s){localStorage.setItem('nasser_skips',JSON.stringify(s));}
+ 
+// Core: get effective session for any date, accounting for all skips
+// Logic: count how many non-morning training days have occurred from PPL_ANCHOR up to (not including) this date,
+// but exclude any days that were skipped. That gives the PPL index.
+function getEffectiveSession(d){
+  if(getShift(d)==='Morning') return 'Rest'; // morning shift always rest, unaffected by skips
+  const skips=loadSkips();
+  const key=dateKey(d);
+  if(skips.includes(key)) return 'Rest'; // this day was skipped
+ 
+  const diff=daysBetween(PPL_ANCHOR,d);
+  let n=0;
+  for(let i=0;i<diff;i++){
+    const x=new Date(PPL_ANCHOR);x.setDate(x.getDate()+i);
+    const xk=dateKey(x);
+    if(getShift(x)!=='Morning' && !skips.includes(xk)) n++;
+  }
+  return PPL[((n%3)+3)%3];
+}
+ 
+function skipWorkout(){
+  const key=dateKey(TODAY);
+  const skips=loadSkips();
+ 
+  // Undo if already skipped
+  if(skips.includes(key)){
+    const idx=skips.indexOf(key);
+    skips.splice(idx,1);
+    saveSkips(skips);
+    renderToday();
+    refreshScheduleIfOpen();
+    return;
+  }
+ 
+  // Only skip real workout days (not morning shift rest)
+  if(getShift(TODAY)==='Morning') return;
+ 
+  skips.push(key);
+  saveSkips(skips);
+  renderToday();
+  refreshScheduleIfOpen();
+}
+ 
+function refreshScheduleIfOpen(){
+  const schedTab=document.getElementById('tab-schedule');
+  if(schedTab && schedTab.classList.contains('active')){
+    if(schedView==='list') renderSchedList();
+    else renderSchedCal();
+  }
+}
+ 
 // ── TODAY ─────────────────────────────────────────────────────────────────────
 function renderToday(){
-  const shift=getShift(TODAY),session=getSession(TODAY),key=dateKey(TODAY);
+  const shift=getShift(TODAY);
+  const key=dateKey(TODAY);
   CURRENT_DAY_KEY=key;
-  const [sc,sl]=SHIFT_C[shift],[wc,wl]=SESSION_C[session];
+ 
+  const skips=loadSkips();
+  const isSkipped=skips.includes(key);
+  const session=getEffectiveSession(TODAY);
+ 
+  const [sc,sl]=SHIFT_C[shift];
+  const [wc,wl]=SESSION_C[session==='Rest'?'Rest':session]||SESSION_C['Rest'];
+ 
   document.getElementById('header-date').textContent=TODAY.toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
   document.getElementById('header-day').textContent=TODAY.toLocaleDateString('en-GB',{weekday:'long'});
   document.getElementById('status-row').innerHTML=`
     <span class="pill" style="background:${sl};color:${sc}"><span class="pill-dot" style="background:${sc}"></span>${shift} Shift</span>
-    <span class="pill" style="background:${wl};color:${wc}"><span class="pill-dot" style="background:${wc}"></span>${session} Day</span>`;
+    <span class="pill" style="background:${wl};color:${wc}"><span class="pill-dot" style="background:${wc}"></span>${isSkipped?'Skipped':session} Day</span>`;
+ 
+  // Show skip button only on real workout days
+  const skipBtn=document.getElementById('skip-btn');
+  const canSkip=getShift(TODAY)!=='Morning';
+  skipBtn.style.display=canSkip?'inline-flex':'none';
+  skipBtn.textContent=isSkipped?'↩ Undo Skip':'Skip Workout';
+  skipBtn.classList.toggle('skipped',isSkipped);
  
   const container=document.getElementById('today-content');
+ 
   if(session==='Rest'){
-    container.innerHTML=`<div class="card rest-card"><div class="rest-icon">🌙</div><div class="rest-title">Rest Day</div><div class="rest-sub">Morning shift today.<br>Recover well — next session tomorrow.</div></div>${nextHTML()}`;
+    const icon=isSkipped?'⏭':'🌙';
+    const title=isSkipped?'Skipped':'Rest Day';
+    const sub=isSkipped
+      ?`Workout skipped — the sequence continues from tomorrow.<br>Tap "↩ Undo Skip" above to revert.`
+      :'Morning shift today.<br>Recover well — next session tomorrow.';
+    container.innerHTML=`<div class="card rest-card"><div class="rest-icon">${icon}</div><div class="rest-title">${title}</div><div class="rest-sub">${sub}</div></div>${nextHTML()}`;
     return;
   }
  
@@ -318,11 +405,19 @@ function renderWorkout(session, key){
   const w=WORKOUTS[session], saved=loadWorkouts()[key]||{};
   const container=document.getElementById('today-content');
   const cd=saved['cardio']===true;
+  const isFinished=saved['finished']===true;
  
   let exHTML='';
   w.exercises.forEach((ex,i)=>{
     exHTML += buildExerciseHTML(key, ex, i, saved);
   });
+ 
+  const finishHTML = isFinished
+    ? `<div class="finish-banner">
+        <div class="finish-banner-title">✅ Workout Logged!</div>
+        <div class="finish-banner-sub">${countDoneExercises(saved, w)} exercise(s) saved to history.<br><span style="cursor:pointer;text-decoration:underline" onclick="undoFinish('${key}')">Undo</span></div>
+      </div>`
+    : `<button class="finish-btn" onclick="finishWorkout('${key}','${session}')">Workout Finished</button>`;
  
   container.innerHTML=`<div class="card">
     <div class="workout-header">
@@ -334,7 +429,41 @@ function renderWorkout(session, key){
       <div><div class="cardio-label">🚶 Incline treadmill walk</div><div class="cardio-sub">10–12% incline · 5–6 km/h · 15–20 min</div></div>
       <span class="cardio-check">${cd?'✅':'⬜'}</span>
     </div>
+    ${finishHTML}
   </div>`;
+}
+ 
+function countDoneExercises(saved, w){
+  let count=0;
+  w.exercises.forEach((_,i)=>{ if(saved[`done_${i}`]) count++; });
+  return count;
+}
+ 
+function finishWorkout(dk, session){
+  const all=loadWorkouts();
+  if(!all[dk])all[dk]={};
+  // Mark finished
+  all[dk]['finished']=true;
+  all[dk]['session']=session;
+  // Remove unchecked exercises from the log (keep only done ones)
+  const w=WORKOUTS[session];
+  w.exercises.forEach((_,i)=>{
+    if(!all[dk][`done_${i}`]){
+      delete all[dk][`ex_${i}`];
+      delete all[dk][`sets_${i}`];
+    }
+  });
+  saveWorkouts(all);
+  renderWorkout(session, dk);
+}
+ 
+function undoFinish(dk){
+  const all=loadWorkouts();
+  if(all[dk]) delete all[dk]['finished'];
+  saveWorkouts(all);
+  const skips=loadSkips();
+  const session=(skips[dk]&&skips[dk].movedFrom)?skips[dk].session:getSession(new Date(dk+'T00:00:00'));
+  renderWorkout(session, dk);
 }
  
 function buildExerciseHTML(key, ex, i, saved){
@@ -469,8 +598,8 @@ function toggleCardio(dk){
  
 function nextHTML(){
   let d=new Date(TODAY);d.setDate(d.getDate()+1);
-  for(let i=0;i<7;i++){
-    const s=getSession(d);
+  for(let i=0;i<14;i++){
+    const s=getEffectiveSession(d);
     if(s!=='Rest'){const wo=WORKOUTS[s];return`<div class="card"><div class="card-label">Next session</div><div class="next-card"><span class="workout-badge" style="background:${wo.bg};color:${wo.color}">${s}</span><div><div style="font-weight:500;font-size:14px">${s} Day</div><div style="font-size:12px;color:var(--text-secondary)">${fmtLong(d)}</div></div></div></div>`;}
     d.setDate(d.getDate()+1);
   }return'';
@@ -503,20 +632,23 @@ function renderWeight(){
 function renderHistory(){
   const all=loadWorkouts(),el=document.getElementById('history-list');
   const days=Object.keys(all).sort().reverse().filter(k=>{
-    const d=new Date(k+'T00:00:00');return getSession(d)!=='Rest'&&Object.keys(all[k]).some(e=>e!=='cardio');
+    return all[k]['finished']===true;
   });
-  if(!days.length){el.innerHTML='<div class="empty-state">No workouts logged yet.<br>Complete your first session to see history.</div>';return;}
+  if(!days.length){el.innerHTML='<div class="empty-state">No workouts logged yet.<br>Tap "Workout Finished" after your session to log it.</div>';return;}
   el.innerHTML=days.map(k=>{
-    const d=new Date(k+'T00:00:00'),s=getSession(d);if(s==='Rest')return'';
-    const w=WORKOUTS[s],data=all[k];
+    const d=new Date(k+'T00:00:00');
+    const data=all[k];
+    const s=data['session']||getEffectiveSession(d);
+    if(!WORKOUTS[s])return'';
+    const w=WORKOUTS[s];
     let ex='';
     w.exercises.forEach((e,i)=>{
-      const sets=data[`ex_${i}`];if(!sets)return;
+      if(!data[`done_${i}`])return; // only logged (checked) exercises
+      const sets=data[`ex_${i}`];
       const setCount=data[`sets_${i}`]||e.sets;
       let lines='';
-      for(let s=1;s<=setCount;s++){const sv=sets[`s${s}`];if(sv&&(sv.kg||sv.reps))lines+=`Set ${s}: ${sv.kg||'—'} kg × ${sv.reps||'—'} reps &nbsp; `;}
-      const done=data[`done_${i}`];
-      if(lines||done)ex+=`<div class="history-ex"><div class="history-ex-name">${done?'✅ ':''}${e.name}</div><div class="history-set-line">${lines||'—'}</div></div>`;
+      if(sets){for(let s=1;s<=setCount;s++){const sv=sets[`s${s}`];if(sv&&(sv.kg||sv.reps))lines+=`Set ${s}: ${sv.kg||'—'} kg × ${sv.reps||'—'} reps &nbsp; `;}}
+      ex+=`<div class="history-ex"><div class="history-ex-name">✅ ${e.name}</div><div class="history-set-line">${lines||'Completed'}</div></div>`;
     });
     if(data['cardio'])ex+=`<div class="history-ex" style="color:var(--green);font-size:12px">✅ Incline treadmill walk completed</div>`;
     return`<div class="history-day" onclick="this.classList.toggle('open')">
@@ -540,59 +672,81 @@ function setSchedView(v){
 }
  
 function renderSchedList(){
+  const skips=loadSkips();
   document.getElementById('schedule-list').innerHTML=Array.from({length:20},(_,i)=>{
     const d=new Date(TODAY);d.setDate(d.getDate()+i);
-    const shift=getShift(d),session=getSession(d);
+    const key=dateKey(d);
+    const shift=getShift(d);
+    const session=getEffectiveSession(d);
     const [sc,sl]=SHIFT_C[shift],[wc,wl]=SESSION_C[session];
+    const isSkipped=skips.includes(key);
     return`<div class="sched-row ${i===0?'today-row':''}">
       <span class="sched-date-text">${i===0?'→ ':''}${fmtSched(d)}</span>
-      <div class="sched-badges"><span class="badge-sm" style="background:${sl};color:${sc}">${shift}</span><span class="badge-sm" style="background:${wl};color:${wc}">${session}</span></div>
+      <div class="sched-badges">
+        <span class="badge-sm" style="background:${sl};color:${sc}">${shift}</span>
+        <span class="badge-sm" style="background:${isSkipped?'#3A1A1A':wl};color:${isSkipped?'#E87070':wc}">${isSkipped?'Skipped':session}</span>
+      </div>
     </div>`;
   }).join('');
 }
  
 function renderSchedCal(){
   const calEl=document.getElementById('schedule-cal');
-  // show current + next month
+  const skips=loadSkips();
   const months=[];
   const m0=new Date(TODAY.getFullYear(),TODAY.getMonth(),1);
   months.push(m0);
   months.push(new Date(TODAY.getFullYear(),TODAY.getMonth()+1,1));
  
+  // shift abbreviations and colors for calendar
+  const SHIFT_ABBR = {Morning:'Mo',Noon:'No',Night:'Ni',Off:'Off'};
+ 
   let html='';
   months.forEach(monthStart=>{
     const monthName=monthStart.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
     const daysInMonth=new Date(monthStart.getFullYear(),monthStart.getMonth()+1,0).getDate();
-    const firstDow=monthStart.getDay(); // 0=Sun
+    const firstDow=monthStart.getDay();
  
     html+=`<div class="cal-month-label">${monthName}</div>`;
     html+=`<div class="cal-grid">`;
-    // day of week headers
     ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(d=>{ html+=`<div class="cal-dow">${d}</div>`; });
-    // empty cells
     for(let e=0;e<firstDow;e++) html+=`<div class="cal-cell empty"></div>`;
  
     for(let day=1;day<=daysInMonth;day++){
       const d=new Date(monthStart.getFullYear(),monthStart.getMonth(),day);
-      const shift=getShift(d),session=getSession(d);
-      const isToday=dateKey(d)===dateKey(TODAY);
+      const key=dateKey(d);
+      const shift=getShift(d);
+      const session=getEffectiveSession(d);
+      const isToday=key===dateKey(TODAY);
       const isPast=d<TODAY;
+      const isSkipped=skips.includes(key);
       const [sc,sl]=SHIFT_C[shift],[wc,wl]=SESSION_C[session];
  
-      html+=`<div class="cal-cell ${isToday?'today-cell':''}" style="background:${isPast&&!isToday?'rgba(255,255,255,0.02)':''}">
-        <div class="cal-day-num" style="opacity:${isPast&&!isToday?'0.4':'1'}">${day}</div>
-        <div class="cal-dot" style="background:${wl};color:${wc}">${session==='Rest'?'—':session.slice(0,2)}</div>
+      html+=`<div class="cal-cell ${isToday?'today-cell':''}" style="opacity:${isPast&&!isToday?'0.45':'1'}">
+        <div class="cal-day-num" style="${isToday?'color:var(--text);font-weight:700':''}">${day}</div>
+        <div class="cal-dot" style="background:${isSkipped?'#3A1A1A':wl};color:${isSkipped?'#E87070':wc}">${isSkipped?'Skip':session==='Rest'?'—':session.slice(0,2)}</div>
+        <div class="cal-dot" style="background:${sl};color:${sc};margin-top:2px">${SHIFT_ABBR[shift]}</div>
       </div>`;
     }
     html+=`</div>`;
   });
  
-  // Legend
-  html+=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
-    <span class="badge-sm" style="background:#1A2535;color:#6B9FE8">Pu = Push</span>
-    <span class="badge-sm" style="background:#221A35;color:#A07ED4">Pu = Pull</span>
-    <span class="badge-sm" style="background:#152A20;color:#5EBA8A">Le = Legs</span>
-    <span class="badge-sm" style="background:#1E1E1C;color:#7A7870">— = Rest</span>
+  // Legend — workout sessions
+  html+=`<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+    <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-secondary);margin-bottom:8px">Workout</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+      <span class="badge-sm" style="background:#1A2535;color:#6B9FE8">Pu = Push</span>
+      <span class="badge-sm" style="background:#221A35;color:#A07ED4">Pu = Pull</span>
+      <span class="badge-sm" style="background:#152A20;color:#5EBA8A">Le = Legs</span>
+      <span class="badge-sm" style="background:#1E1E1C;color:#7A7870">— = Rest</span>
+    </div>
+    <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.8px;color:var(--text-secondary);margin-bottom:8px">Shift</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <span class="badge-sm" style="background:#2A1F0A;color:#E8A847">Mo = Morning</span>
+      <span class="badge-sm" style="background:#152A20;color:#5EBA8A">No = Noon</span>
+      <span class="badge-sm" style="background:#1A2535;color:#6B9FE8">Ni = Night</span>
+      <span class="badge-sm" style="background:#1E1E1C;color:#7A7870">Off = Day Off</span>
+    </div>
   </div>`;
  
   calEl.innerHTML=html;
